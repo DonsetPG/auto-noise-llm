@@ -1,0 +1,700 @@
+\documentclass{article}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{bm} % For bold math symbols
+\usepackage{authblk}
+\usepackage{times}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{todonotes}
+\geometry{a4paper, margin=1in}
+
+\title{The Information Geometry of Context Windows: A Fisher Information Framework for Analyzing Information Propagation in Large Language Models}
+
+\author{Paul Garnier}
+\affil{PSL}
+\date{November 5, 2025}
+
+% Theorem environments
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{corollary}[theorem]{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{remark}[theorem]{Remark}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+The capacity of Large Language Models (LLMs) to utilize information across extensive context windows is critical for complex reasoning. Empirical evaluations, such as the "Needle in a Haystack" (NIAH) benchmark, measure retrieval capabilities but lack the mathematical rigor to quantify the underlying mechanisms of information propagation and loss. We propose a rigorous analytical framework grounded in statistical estimation theory and information geometry. By treating the input embeddings of a trained LLM as parameters of a statistical manifold, we utilize the Fisher Information Matrix (FIM) to quantify the sensitivity of the model's output distribution to specific input elements. We introduce the "Information Profile," which analytically characterizes the model's information retention across the context window, and prove that it is equivalent to the expected squared norm of the input gradients. We further introduce the Expected Information Profile (EIP) to characterize average information retention independent of specific inputs. Furthermore, we formalize the NIAH task as a latent variable estimation problem and derive the Cramér-Rao Bound (CRB) for retrieving this latent information, rigorously connecting the model's information geometry to the theoretical limits of recall performance. We detail the computational methodologies required for estimation via Monte Carlo sampling, including an analysis of the estimator's properties. This approach provides a theoretically grounded, task-agnostic alternative to empirical testing.
+\end{abstract}
+
+\section{Introduction}
+The expansion of the context window in Transformer-based Large Language Models (LLMs) has enabled the processing of inputs spanning significant lengths. However, the effective utilization of this extended context remains a challenge. Empirical studies, such as the "Needle in a Haystack" (NIAH) analysis, have revealed phenomena like "lost in the middle," where models struggle to retrieve information located in the central segments of long contexts \cite{liu2023lost}.
+
+While NIAH provides a practical measure of end-to-end recall performance, it is inherently empirical. It measures the success or failure of a specific retrieval task but does not quantify the underlying information-theoretic capacity of the model, nor does it explain the fundamental limits of information propagation within the architecture.
+
+We propose a framework rooted in classical statistical estimation theory and Information Geometry \cite{amari2016information} to analyze the information flow within an LLM during inference. The Fisher Information Matrix (FIM) quantifies the sensitivity of a distribution to changes in its parameters. In a departure from the typical application of FIM to analyze model weights, we calculate the FIM with respect to the input embeddings (while keeping the model weights fixed). This allows us to measure how much information about the input is preserved in the output distribution and to derive the Cramér-Rao Bound (CRB), which establishes a theoretical lower bound on the variance of any estimator attempting to infer the input, or information derived from the input, from the output.
+
+This paper develops a framework for analyzing the information geometry of the LLM's input space. We introduce the "Information Profile" as an analytical tool to characterize information retention and rigorously connect the CRB to the theoretical limits of information retrieval in the context of the NIAH benchmark. Furthermore, we address the practical challenges of computing these information-theoretic quantities, providing a detailed methodology for their estimation, and introduce the Expected Information Profile to address generalization beyond specific inputs.
+
+\section{Related Work}
+
+\todo{Injec paper: section p9 about inverse problem}
+
+The application of information theory and Fisher Information to analyze deep learning models has a rich history, traditionally focused on the parameter space (weights) \cite{amari2016information}. Recently, these tools have been adapted to study the input space and context utilization in LLMs.
+
+\subsection{Information-Theoretic Metrics for Context Sensitivity}
+
+The concept of quantifying the sensitivity of an LLM's output to its input context using information-theoretic tools has gained traction.
+
+Du et al. (2024) \cite{du2024context} introduced "susceptibility," defined as the conditional mutual information between the context and the answer for a given query. This metric measures the divergence between the model's prior distribution (without context) and its posterior distribution (with context). High susceptibility indicates a strong influence of context, suggesting that even misleading contexts can significantly alter responses.
+
+Building upon this, Liu, Du, et al. (2024) \cite{liu2024efficiently} proposed "Fisher susceptibility" as an efficient approximation. They utilized the FIM of the output distribution with respect to the context embeddings as a second-order approximation to the KL-divergence underlying the original susceptibility metric. This approach, relying on the squared norm of the gradient of the log-likelihood (the Fisher score), proved significantly faster. Their analysis revealed that instruction-tuned models exhibit higher susceptibility than base models and that increased model size does not necessarily reduce vulnerability to irrelevant context.
+
+Our work shares the motivation of quantifying input sensitivity using the Fisher Information Matrix. While Fisher susceptibility focuses on approximating the mutual information between a context segment and the output, our framework utilizes the FIM to establish rigorous theoretical bounds on the *recoverability* of information via the Cramér-Rao Bound. We introduce the "Information Profile" to systematically analyze position-wise information retention across the entire context window.
+
+\subsection{Fisher Information for Interpretability and Long-Context Behavior}
+
+Fisher Information has also been employed to analyze the internal mechanisms of LLMs related to complex reasoning and context processing. Wu et al. (2025) \cite{wu2025theoryofmind} utilized the FIM with respect to model parameters to identify which weights are critical for theory-of-mind (ToM) tasks requiring long-context reasoning. They found these critical parameters were concentrated in the positional encoding mechanism (specifically RoPE). Perturbing these weights disrupted the model's ability to localize tokens in context, leading to a breakdown in long-context understanding.
+
+This study highlights the utility of FIM for interpretability, linking specific weights and architectural choices to high-level reasoning capabilities. In contrast, our framework focuses on the information geometry of the *input space* during inference, keeping the weights fixed, providing a complementary perspective on the fundamental limits of information propagation imposed by the architecture.
+
+\section{Preliminaries}
+We begin by reviewing the fundamental concepts of statistical estimation theory and Information Geometry, providing complete proofs for the foundational theorems. We assume standard regularity conditions throughout, particularly the ability to exchange differentiation and integration \cite{lehmann1998theory}.
+
+\subsection{Statistical Estimation and the Fisher Information Matrix}
+
+Let $\mathbb{P}(Y|\boldsymbol{\theta})$ be a probability distribution of a random variable $Y$, parameterized by a vector $\boldsymbol{\theta} \in \Theta \subseteq \mathbb{R}^d$.
+
+\begin{definition}[Score Function]
+The score function $\mathbf{S}(\boldsymbol{\theta}; Y)$ is the gradient of the log-likelihood with respect to $\boldsymbol{\theta}$:
+\begin{equation}
+    \mathbf{S}(\boldsymbol{\theta}; Y) = \nabla_{\boldsymbol{\theta}} \log \mathbb{P}(Y|\boldsymbol{\theta}).
+\end{equation}
+\end{definition}
+
+\begin{lemma}
+\label{lemma:score_zero}
+The expected value of the score function is the zero vector: $\mathbb{E}_{Y|\boldsymbol{\theta}}[\mathbf{S}(\boldsymbol{\theta}; Y)] = \mathbf{0}$.
+\end{lemma}
+\begin{proof}
+We assume $\mathbb{P}(Y|\boldsymbol{\theta})$ is a density function with respect to a measure $dY$.
+\begin{align}
+    \mathbb{E}_{Y|\boldsymbol{\theta}}[\mathbf{S}(\boldsymbol{\theta}; Y)] &= \int \mathbf{S}(\boldsymbol{\theta}; Y) \mathbb{P}(Y|\boldsymbol{\theta}) dY \\
+    &= \int \nabla_{\boldsymbol{\theta}} \log \mathbb{P}(Y|\boldsymbol{\theta}) \mathbb{P}(Y|\boldsymbol{\theta}) dY.
+\end{align}
+Using the identity $\nabla_{\boldsymbol{\theta}} \log \mathbb{P}(Y|\boldsymbol{\theta}) = \frac{\nabla_{\boldsymbol{\theta}} \mathbb{P}(Y|\boldsymbol{\theta})}{\mathbb{P}(Y|\boldsymbol{\theta})}$:
+\begin{align}
+    \mathbb{E}_{Y|\boldsymbol{\theta}}[\mathbf{S}(\boldsymbol{\theta}; Y)] &= \int \frac{\nabla_{\boldsymbol{\theta}} \mathbb{P}(Y|\boldsymbol{\theta})}{\mathbb{P}(Y|\boldsymbol{\theta})} \mathbb{P}(Y|\boldsymbol{\theta}) dY = \int \nabla_{\boldsymbol{\theta}} \mathbb{P}(Y|\boldsymbol{\theta}) dY.
+\end{align}
+By the regularity condition allowing interchange of differentiation and integration:
+\begin{equation}
+    \int \nabla_{\boldsymbol{\theta}} \mathbb{P}(Y|\boldsymbol{\theta}) dY = \nabla_{\boldsymbol{\theta}} \int \mathbb{P}(Y|\boldsymbol{\theta}) dY.
+\end{equation}
+Since $\int \mathbb{P}(Y|\boldsymbol{\theta}) dY = 1$ (it is a probability distribution):
+\begin{equation}
+    \nabla_{\boldsymbol{\theta}} (1) = \mathbf{0}.
+\end{equation}
+\end{proof}
+
+\begin{definition}[Fisher Information Matrix (FIM)]
+The Fisher Information Matrix (FIM) $\mathbf{I}(\boldsymbol{\theta})$ is the covariance matrix of the score function:
+\begin{equation}
+    \mathbf{I}(\boldsymbol{\theta}) = \text{Cov}(\mathbf{S}(\boldsymbol{\theta}; Y)) = \mathbb{E}_{Y|\boldsymbol{\theta}}[\mathbf{S}(\boldsymbol{\theta}; Y) \mathbf{S}(\boldsymbol{\theta}; Y)^T].
+\end{equation}
+Since $\mathbb{E}[\mathbf{S}(\boldsymbol{\theta}; Y)] = \mathbf{0}$ by Lemma \ref{lemma:score_zero}, the covariance equals the second moment.
+\end{definition}
+
+\begin{theorem}[Cramér-Rao Bound (CRB)]
+\label{thm:crb}
+Let $\hat{\boldsymbol{\theta}}(Y)$ be an unbiased estimator of $\boldsymbol{\theta}$, i.e., $\mathbb{E}_{Y|\boldsymbol{\theta}}[\hat{\boldsymbol{\theta}}(Y)] = \boldsymbol{\theta}$. Assuming $\mathbf{I}(\boldsymbol{\theta})$ is positive definite, the covariance matrix of the estimator satisfies:
+\begin{equation}
+    \text{Cov}(\hat{\boldsymbol{\theta}}) \succeq \mathbf{I}(\boldsymbol{\theta})^{-1},
+\end{equation}
+where $\mathbf{A} \succeq \mathbf{B}$ denotes that $\mathbf{A}-\mathbf{B}$ is positive semi-definite.
+\end{theorem}
+\begin{proof}
+We examine the cross-covariance matrix between the estimator $\hat{\boldsymbol{\theta}}$ and the score function $\mathbf{S} = \mathbf{S}(\boldsymbol{\theta}; Y)$.
+\begin{equation}
+    \text{Cov}(\hat{\boldsymbol{\theta}}, \mathbf{S}) = \mathbb{E}[\hat{\boldsymbol{\theta}} \mathbf{S}^T] - \mathbb{E}[\hat{\boldsymbol{\theta}}] \mathbb{E}[\mathbf{S}]^T.
+\end{equation}
+By Lemma \ref{lemma:score_zero}, $\mathbb{E}[\mathbf{S}] = \mathbf{0}$. Thus, $\text{Cov}(\hat{\boldsymbol{\theta}}, \mathbf{S}) = \mathbb{E}[\hat{\boldsymbol{\theta}} \mathbf{S}^T]$.
+
+We evaluate $\mathbb{E}[\hat{\boldsymbol{\theta}} \mathbf{S}^T]$ explicitly:
+\begin{align}
+    \mathbb{E}[\hat{\boldsymbol{\theta}} \mathbf{S}^T] &= \int \hat{\boldsymbol{\theta}}(Y) (\nabla_{\boldsymbol{\theta}} \log \mathbb{P}(Y|\boldsymbol{\theta}))^T \mathbb{P}(Y|\boldsymbol{\theta}) dY \\
+    &= \int \hat{\boldsymbol{\theta}}(Y) \left(\frac{\nabla_{\boldsymbol{\theta}} \mathbb{P}(Y|\boldsymbol{\theta})}{\mathbb{P}(Y|\boldsymbol{\theta})}\right)^T \mathbb{P}(Y|\boldsymbol{\theta}) dY \\
+    &= \int \hat{\boldsymbol{\theta}}(Y) (\nabla_{\boldsymbol{\theta}} \mathbb{P}(Y|\boldsymbol{\theta}))^T dY.
+\end{align}
+Assuming interchangeability of integration and differentiation:
+\begin{align}
+    \mathbb{E}[\hat{\boldsymbol{\theta}} \mathbf{S}^T] &= \nabla_{\boldsymbol{\theta}} \left(\int \hat{\boldsymbol{\theta}}(Y) \mathbb{P}(Y|\boldsymbol{\theta}) dY\right)^T = \nabla_{\boldsymbol{\theta}} (\mathbb{E}[\hat{\boldsymbol{\theta}}])^T.
+\end{align}
+Since $\hat{\boldsymbol{\theta}}$ is unbiased, $\mathbb{E}[\hat{\boldsymbol{\theta}}] = \boldsymbol{\theta}$. Therefore,
+\begin{equation}
+    \mathbb{E}[\hat{\boldsymbol{\theta}} \mathbf{S}^T] = \nabla_{\boldsymbol{\theta}} \boldsymbol{\theta}^T = \mathbf{I}_d,
+\end{equation}
+where $\mathbf{I}_d$ is the $d \times d$ identity matrix.
+
+Now, consider the covariance matrix of the joint random vector $\begin{pmatrix} \hat{\boldsymbol{\theta}} \\ \mathbf{S} \end{pmatrix}$. This matrix must be positive semi-definite:
+\begin{equation}
+    \boldsymbol{\Sigma} = \begin{pmatrix} \text{Cov}(\hat{\boldsymbol{\theta}}) & \text{Cov}(\hat{\boldsymbol{\theta}}, \mathbf{S}) \\ \text{Cov}(\mathbf{S}, \hat{\boldsymbol{\theta}}) & \text{Cov}(\mathbf{S}) \end{pmatrix} = \begin{pmatrix} \text{Cov}(\hat{\boldsymbol{\theta}}) & \mathbf{I}_d \\ \mathbf{I}_d & \mathbf{I}(\boldsymbol{\theta}) \end{pmatrix} \succeq 0.
+\end{equation}
+A necessary and sufficient condition for $\boldsymbol{\Sigma}$ to be positive semi-definite, given that $\mathbf{I}(\boldsymbol{\theta})$ is invertible (positive definite), is that its Schur complement must also be positive semi-definite. The Schur complement of $\mathbf{I}(\boldsymbol{\theta})$ in $\boldsymbol{\Sigma}$ is:
+\begin{equation}
+    \text{Cov}(\hat{\boldsymbol{\theta}}) - \mathbf{I}_d \mathbf{I}(\boldsymbol{\theta})^{-1} \mathbf{I}_d^T \succeq 0 \implies \text{Cov}(\hat{\boldsymbol{\theta}}) \succeq \mathbf{I}(\boldsymbol{\theta})^{-1}.
+\end{equation}
+\end{proof}
+
+\subsection{Information Geometry}
+The FIM acts as a Riemannian metric tensor on the statistical manifold of distributions parameterized by $\boldsymbol{\theta}$, relating parameter changes to the distinguishability of the distributions \cite{amari2016information}.
+
+\begin{lemma}[Local Approximation of KL Divergence]
+\label{lemma:kl_approx}
+The Kullback-Leibler (KL) divergence between $\mathbb{P}(Y|\boldsymbol{\theta})$ and $\mathbb{P}(Y|\boldsymbol{\theta} + \delta\boldsymbol{\theta})$ is locally approximated by the quadratic form induced by the FIM:
+\begin{equation}
+    D_{KL}(\mathbb{P}(Y|\boldsymbol{\theta}) \| \mathbb{P}(Y|\boldsymbol{\theta} + \delta\boldsymbol{\theta})) = \frac{1}{2} \delta\boldsymbol{\theta}^T \mathbf{I}(\boldsymbol{\theta}) \delta\boldsymbol{\theta} + O(\|\delta\boldsymbol{\theta}\|^3).
+\end{equation}
+\end{lemma}
+\begin{proof}
+Let $L(\boldsymbol{\theta}) = \log \mathbb{P}(Y|\boldsymbol{\theta})$. We use the Taylor expansion of $L(\boldsymbol{\theta}+\delta\boldsymbol{\theta})$ around $\boldsymbol{\theta}$:
+\begin{equation}
+    L(\boldsymbol{\theta}+\delta\boldsymbol{\theta}) \approx L(\boldsymbol{\theta}) + \delta\boldsymbol{\theta}^T \nabla_{\boldsymbol{\theta}} L(\boldsymbol{\theta}) + \frac{1}{2} \delta\boldsymbol{\theta}^T \nabla_{\boldsymbol{\theta}}^2 L(\boldsymbol{\theta}) \delta\boldsymbol{\theta}.
+\end{equation}
+The KL divergence is defined as $D_{KL} = \mathbb{E}_{Y|\boldsymbol{\theta}}[L(\boldsymbol{\theta}) - L(\boldsymbol{\theta}+\delta\boldsymbol{\theta})]$. Substituting the expansion and taking the expectation:
+\begin{equation}
+    D_{KL} \approx - \mathbb{E}_{Y|\boldsymbol{\theta}} \left[ \delta\boldsymbol{\theta}^T \nabla_{\boldsymbol{\theta}} L(\boldsymbol{\theta}) + \frac{1}{2} \delta\boldsymbol{\theta}^T \nabla_{\boldsymbol{\theta}}^2 L(\boldsymbol{\theta}) \delta\boldsymbol{\theta} \right].
+\end{equation}
+The expectation is linear. The first term involves the expectation of the score function: $\mathbb{E}_{Y|\boldsymbol{\theta}}[\nabla_{\boldsymbol{\theta}} L(\boldsymbol{\theta})]$. By Lemma \ref{lemma:score_zero}, this expectation is $\mathbf{0}$.
+
+The second term involves the Hessian of the log-likelihood, $\nabla_{\boldsymbol{\theta}}^2 L(\boldsymbol{\theta})$. Under standard regularity conditions, the FIM is equivalent to the negative expectation of the Hessian (the second Bartlett identity): $\mathbf{I}(\boldsymbol{\theta}) = - \mathbb{E}_{Y|\boldsymbol{\theta}}[\nabla_{\boldsymbol{\theta}}^2 L(\boldsymbol{\theta})]$.
+
+Substituting these back into the expression for $D_{KL}$:
+\begin{equation}
+    D_{KL} \approx - \left( \delta\boldsymbol{\theta}^T \cdot \mathbf{0} + \frac{1}{2} \delta\boldsymbol{\theta}^T \mathbb{E}[\nabla_{\boldsymbol{\theta}}^2 L(\boldsymbol{\theta})] \delta\boldsymbol{\theta} \right) = - \frac{1}{2} \delta\boldsymbol{\theta}^T (-\mathbf{I}(\boldsymbol{\theta})) \delta\boldsymbol{\theta} = \frac{1}{2} \delta\boldsymbol{\theta}^T \mathbf{I}(\boldsymbol{\theta}) \delta\boldsymbol{\theta}.
+\end{equation}
+\end{proof}
+
+\section{The Fisher Information of the Input Space}
+We now apply this framework to LLMs. We consider a trained LLM with fixed weights $\mathbf{W}$. The model takes an input sequence of tokens $X$, which is mapped to an embedding sequence $\mathbf{\Theta} = (\boldsymbol{\theta}_1, \dots, \boldsymbol{\theta}_K)$, where $\boldsymbol{\theta}_k \in \mathbb{R}^d$ is the embedding vector at position $k$ and $K$ is the context length. The LLM defines a conditional distribution $P_{\mathbf{W}}(Y|\mathbf{\Theta})$.
+
+To analyze information flow during inference, we treat the input embeddings $\mathbf{\Theta}$ as the parameters of the statistical model governing the output $Y$, while the weights $\mathbf{W}$ remain fixed.
+
+\subsection{The Input Fisher Information Matrix (IFIM)}
+
+\begin{definition}[Input Fisher Information Matrix (IFIM)]
+The IFIM, denoted $\mathbf{I}_{\mathbf{W}}(\mathbf{\Theta})$, is the Fisher Information Matrix calculated with respect to the input embeddings $\mathbf{\Theta}$ (vectorized), given fixed weights $\mathbf{W}$.
+\begin{equation}
+    \mathbf{I}_{\mathbf{W}}(\mathbf{\Theta}) = \mathbb{E}_{Y|\mathbf{\Theta}} \left[ \left(\nabla_{\mathbf{\Theta}} \log P_{\mathbf{W}}(Y|\mathbf{\Theta})\right) \left(\nabla_{\mathbf{\Theta}} \log P_{\mathbf{W}}(Y|\mathbf{\Theta})\right)^T \right].
+\end{equation}
+\end{definition}
+
+The IFIM is a large matrix (dimension $Kd \times Kd$). To analyze the contribution of a specific token position $k$, we examine the corresponding block diagonal segment of the IFIM.
+
+\begin{definition}[Positional Fisher Information Matrix (P-FIM)]
+The P-FIM at position $k$, denoted $\mathbf{I}_k(\mathbf{\Theta}) \in \mathbb{R}^{d \times d}$, is the $k$-th block diagonal of the IFIM. It measures the sensitivity of the output specifically to the embedding vector at position $k$:
+\begin{equation}
+    \mathbf{I}_k(\mathbf{\Theta}) = \mathbb{E}_{Y|\mathbf{\Theta}} \left[ \left(\nabla_{\boldsymbol{\theta}_k} \log P_{\mathbf{W}}(Y|\mathbf{\Theta})\right) \left(\nabla_{\boldsymbol{\theta}_k} \log P_{\mathbf{W}}(Y|\mathbf{\Theta})\right)^T \right].
+\end{equation}
+\end{definition}
+
+\subsection{The Information Profile}
+
+To facilitate analysis across the context window, we introduce a scalar measure of information content at each position.
+
+\begin{definition}[Information Profile]
+The Information Profile $\mathcal{P}_I: \{1, \dots, K\} \to \mathbb{R}_{\geq 0}$ is defined as the trace of the P-FIM at each position:
+\begin{equation}
+    \mathcal{P}_I(k; \mathbf{\Theta}) = \text{Tr}(\mathbf{I}_k(\mathbf{\Theta})).
+\end{equation}
+We explicitly denote the dependency on the input $\mathbf{\Theta}$.
+\end{definition}
+The trace summarizes the total sensitivity of the output to the embedding at position $k$.
+
+\begin{theorem}[Interpretation of the Information Profile]
+\label{thm:profile_interpretation}
+The Information Profile $\mathcal{P}_I(k; \mathbf{\Theta})$ is directly proportional to the expected sensitivity of the model's output distribution (measured by KL divergence) to random isotropic perturbations of the input embedding $\boldsymbol{\theta}_k$.
+\end{theorem}
+\begin{proof}
+Consider a perturbation $\delta\boldsymbol{\theta}_k$ at position $k$, with $\delta\boldsymbol{\theta}_j=\mathbf{0}$ for $j\neq k$. By Lemma \ref{lemma:kl_approx}, the change in the output distribution is locally approximated as:
+\begin{equation}
+    D_{KL} \approx \frac{1}{2} (\delta\boldsymbol{\theta}_k)^T \mathbf{I}_k(\mathbf{\Theta}) (\delta\boldsymbol{\theta}_k).
+\end{equation}
+Assume the perturbations $\delta\boldsymbol{\theta}_k$ are drawn from an isotropic distribution with variance $\sigma^2$, such that $\mathbb{E}_{\delta\boldsymbol{\theta}_k}[(\delta\boldsymbol{\theta}_k)(\delta\boldsymbol{\theta}_k)^T] = \sigma^2 \mathbf{I}_d$. We calculate the expected change in the KL divergence:
+\begin{align}
+    \mathbb{E}[D_{KL}] &\approx \frac{1}{2} \mathbb{E}[(\delta\boldsymbol{\theta}_k)^T \mathbf{I}_k(\mathbf{\Theta}) (\delta\boldsymbol{\theta}_k)].
+\end{align}
+Since the quadratic form is a scalar, it is equal to its trace:
+\begin{align}
+    \mathbb{E}[D_{KL}] &= \frac{1}{2} \mathbb{E}[\text{Tr}((\delta\boldsymbol{\theta}_k)^T \mathbf{I}_k(\mathbf{\Theta}) (\delta\boldsymbol{\theta}_k))].
+\end{align}
+Using the cyclic property of the trace ($\text{Tr}(\mathbf{A}\mathbf{B}\mathbf{C}) = \text{Tr}(\mathbf{B}\mathbf{C}\mathbf{A})$):
+\begin{align}
+    \mathbb{E}[D_{KL}] &= \frac{1}{2} \mathbb{E}[\text{Tr}(\mathbf{I}_k(\mathbf{\Theta}) (\delta\boldsymbol{\theta}_k)(\delta\boldsymbol{\theta}_k)^T)].
+\end{align}
+By the linearity of the trace and expectation operators:
+\begin{align}
+    \mathbb{E}[D_{KL}] &= \frac{1}{2} \text{Tr}(\mathbf{I}_k(\mathbf{\Theta}) \mathbb{E}[(\delta\boldsymbol{\theta}_k)(\delta\boldsymbol{\theta}_k)^T]).
+\end{align}
+Substituting the covariance of the isotropic perturbation:
+\begin{align}
+    \mathbb{E}[D_{KL}] &= \frac{1}{2} \text{Tr}(\mathbf{I}_k(\mathbf{\Theta}) \sigma^2 \mathbf{I}_d) = \frac{\sigma^2}{2} \text{Tr}(\mathbf{I}_k(\mathbf{\Theta})) = \frac{\sigma^2}{2} \mathcal{P}_I(k; \mathbf{\Theta}).
+\end{align}
+\end{proof}
+
+\begin{proposition}[Information Profile as Expected Gradient Norm]
+\label{prop:profile_norm}
+The Information Profile $\mathcal{P}_I(k; \mathbf{\Theta})$ is equivalent to the expected squared $L_2$ norm of the score function (the gradient of the log-likelihood) with respect to $\boldsymbol{\theta}_k$.
+\end{proposition}
+\begin{proof}
+Let $\mathbf{S}_k(Y) = \nabla_{\boldsymbol{\theta}_k} \log P_{\mathbf{W}}(Y|\mathbf{\Theta})$ denote the score function at position $k$. By definition, $\mathbf{I}_k(\mathbf{\Theta}) = \mathbb{E}_{Y|\mathbf{\Theta}}[\mathbf{S}_k(Y) \mathbf{S}_k(Y)^T]$.
+\begin{align}
+    \mathcal{P}_I(k; \mathbf{\Theta}) &= \text{Tr}(\mathbf{I}_k(\mathbf{\Theta})) = \text{Tr}(\mathbb{E}_{Y|\mathbf{\Theta}}[\mathbf{S}_k(Y) \mathbf{S}_k(Y)^T]).
+\end{align}
+By the linearity of the trace and expectation operators, we can exchange their order:
+\begin{align}
+    \mathcal{P}_I(k; \mathbf{\Theta}) &= \mathbb{E}_{Y|\mathbf{\Theta}}[\text{Tr}(\mathbf{S}_k(Y) \mathbf{S}_k(Y)^T)].
+\end{align}
+The trace of the outer product of a vector with itself ($\mathbf{v}\mathbf{v}^T$) is the squared $L_2$ norm ($\|\mathbf{v}\|_2^2$):
+\begin{equation}
+    \text{Tr}(\mathbf{S}_k(Y) \mathbf{S}_k(Y)^T) = \mathbf{S}_k(Y)^T \mathbf{S}_k(Y) = \|\mathbf{S}_k(Y)\|_2^2.
+\end{equation}
+Therefore,
+\begin{equation}
+    \mathcal{P}_I(k; \mathbf{\Theta}) = \mathbb{E}_{Y|\mathbf{\Theta}}[\|\nabla_{\boldsymbol{\theta}_k} \log P_{\mathbf{W}}(Y|\mathbf{\Theta})\|_2^2].
+\end{equation}
+\end{proof}
+This formulation is crucial as it reveals that the Information Profile is directly tied to the magnitude of gradients flowing back to the input embeddings, enabling efficient computation (see Section \ref{sec:computation}).
+
+\subsection{The Expected Information Profile}
+The Information Profile $\mathcal{P}_I(k; \mathbf{\Theta})$ is inherently dependent on the specific input sequence $\mathbf{\Theta}$. To characterize the model's general behavior independent of a specific input context, we introduce the Expected Information Profile.
+
+\begin{definition}[Expected Information Profile (EIP)]
+Let $\mathbb{P}(\mathbf{\Theta})$ be the distribution over input sequences of length $K$ (e.g., the distribution of natural language). The Expected Information Profile $\bar{\mathcal{P}}_I(k)$ is the expectation of the Information Profile over this distribution:
+\begin{equation}
+    \bar{\mathcal{P}}_I(k) = \mathbb{E}_{\mathbf{\Theta} \sim \mathbb{P}(\mathbf{\Theta})} [\mathcal{P}_I(k; \mathbf{\Theta})].
+\end{equation}
+\end{definition}
+
+The EIP provides a measure of the average information retention capacity of the model architecture at position $k$. Phenomena like "lost in the middle" that are inherent to the architecture, rather than artifacts of a specific input sequence, should manifest as characteristic patterns in the EIP.
+
+\section{Theoretical Analysis of Context Utilization}
+We now rigorously connect the P-FIM to the theoretical limits of context utilization and information retrieval, formalizing the NIAH scenario.
+
+\todo{Llm paper: link with injevtivity paper}
+
+\subsection{The Input Reconstruction Bound}
+
+We first consider the task of reconstructing the input embedding $\boldsymbol{\theta}_k$ from the output $Y$.
+\todo{https://chatgpt.com/c/691ef267-f138-8330-89e9-356d4cebef6a}
+\begin{theorem}[Input Reconstruction Bound]
+\label{thm:input_reconstruction}
+Let $\hat{\boldsymbol{\theta}}_k(Y)$ be any unbiased estimator attempting to reconstruct the input embedding $\boldsymbol{\theta}_k$ from the output $Y$. The Mean Squared Error (MSE) of this estimator is bounded by the trace of the inverse of the P-FIM:
+\begin{equation}
+    \mathbb{E}[\|\hat{\boldsymbol{\theta}}_k - \boldsymbol{\theta}_k\|^2] \geq \text{Tr}(\mathbf{I}_k(\mathbf{\Theta})^{-1}).
+\end{equation}
+\end{theorem}
+\begin{proof}
+We apply the Cramér-Rao Bound (Theorem \ref{thm:crb}) to the parameters $\boldsymbol{\theta}_k$. The relevant Fisher Information Matrix is the P-FIM, $\mathbf{I}_k(\mathbf{\Theta})$. The CRB states:
+\begin{equation}
+    \text{Cov}(\hat{\boldsymbol{\theta}}_k) \succeq \mathbf{I}_k(\mathbf{\Theta})^{-1}.
+\end{equation}
+The Mean Squared Error (MSE) of an unbiased estimator is the trace of its covariance matrix:
+\begin{equation}
+    \mathbb{E}[\|\hat{\boldsymbol{\theta}}_k - \boldsymbol{\theta}_k\|^2] = \text{Tr}(\text{Cov}(\hat{\boldsymbol{\theta}}_k)).
+\end{equation}
+We utilize the property that the trace operator preserves the inequality for positive semidefinite matrices: if $\mathbf{A} \succeq \mathbf{B} \succeq 0$, then $\text{Tr}(\mathbf{A}) \geq \text{Tr}(\mathbf{B})$. Applying this to the CRB inequality:
+\begin{equation}
+    \text{Tr}(\text{Cov}(\hat{\boldsymbol{\theta}}_k)) \geq \text{Tr}(\mathbf{I}_k(\mathbf{\Theta})^{-1}).
+\end{equation}
+\end{proof}
+
+\subsection{The Latent Information Retrieval Bound (The Needle Estimation Problem)}
+
+The NIAH benchmark is most accurately formalized as retrieving the underlying information (the "needle") that generated the embedding.
+
+Let $\boldsymbol{\nu} \in \mathbb{R}^m$ be a continuous latent variable representing the needle information. We assume the input embedding at position $k$ is generated by a known differentiable function $\mathbf{f}: \mathbb{R}^m \to \mathbb{R}^d$, such that $\boldsymbol{\theta}_k = \mathbf{f}(\boldsymbol{\nu})$. The embeddings at other positions $\boldsymbol{\theta}_j$ ($j\neq k$) are assumed independent of $\boldsymbol{\nu}$. The goal is to estimate $\boldsymbol{\nu}$ from the output $Y$.
+
+\begin{theorem}[Latent Retrieval Bound]
+\label{thm:latent_retrieval}
+Let $\hat{\boldsymbol{\nu}}(Y)$ be an unbiased estimator of the latent needle $\boldsymbol{\nu}$ located at position $k$. The minimum achievable covariance of this estimator is bounded by the CRB derived from the P-FIM $\mathbf{I}_k(\mathbf{\Theta})$ and the Jacobian of the embedding function $\mathbf{J}_k = \frac{\partial \mathbf{f}(\boldsymbol{\nu})}{\partial \boldsymbol{\nu}} \in \mathbb{R}^{d \times m}$.
+\begin{equation}
+    \text{Cov}(\hat{\boldsymbol{\nu}}) \succeq (\mathbf{J}_k^T \mathbf{I}_k(\mathbf{\Theta}) \mathbf{J}_k)^{-1}.
+\end{equation}
+\end{theorem}
+\begin{proof}
+We must calculate the Fisher Information Matrix with respect to $\boldsymbol{\nu}$, denoted $\mathbf{I}(\boldsymbol{\nu})$. We use the chain rule to relate the gradient with respect to $\boldsymbol{\nu}$ to the gradient with respect to $\boldsymbol{\theta}_k$. By assumption, $\boldsymbol{\nu}$ influences $Y$ only through $\boldsymbol{\theta}_k$.
+\begin{equation}
+    \nabla_{\boldsymbol{\nu}} \log \mathbb{P}(Y|\boldsymbol{\nu}) = \left( \frac{\partial \boldsymbol{\theta}_k}{\partial \boldsymbol{\nu}} \right)^T \nabla_{\boldsymbol{\theta}_k} \log \mathbb{P}(Y|\mathbf{\Theta}).
+\end{equation}
+We recognize that $\frac{\partial \boldsymbol{\theta}_k}{\partial \boldsymbol{\nu}}$ is the Jacobian matrix $\mathbf{J}_k$. (We adopt the convention where the gradient is a column vector and the Jacobian $\mathbf{J}_k \in \mathbb{R}^{d \times m}$. Thus, its transpose $\mathbf{J}_k^T$ appears in the chain rule for the gradient).
+\begin{equation}
+    \nabla_{\boldsymbol{\nu}} \log \mathbb{P}(Y|\boldsymbol{\nu}) = \mathbf{J}_k^T \nabla_{\boldsymbol{\theta}_k} \log \mathbb{P}(Y|\mathbf{\Theta}).
+\end{equation}
+
+The Fisher Information $\mathbf{I}(\boldsymbol{\nu})$ is the expectation of the outer product of this gradient:
+\begin{align}
+    \mathbf{I}(\boldsymbol{\nu}) &= \mathbb{E}_Y \left[ (\nabla_{\boldsymbol{\nu}} \log \mathbb{P}(Y|\boldsymbol{\nu})) (\nabla_{\boldsymbol{\nu}} \log \mathbb{P}(Y|\boldsymbol{\nu}))^T \right] \\
+    &= \mathbb{E}_Y \left[ \left(\mathbf{J}_k^T \nabla_{\boldsymbol{\theta}_k} \log P\right) \left(\mathbf{J}_k^T \nabla_{\boldsymbol{\theta}_k} \log P\right)^T \right] \\
+    &= \mathbb{E}_Y \left[ \mathbf{J}_k^T (\nabla_{\boldsymbol{\theta}_k} \log P) (\nabla_{\boldsymbol{\theta}_k} \log P)^T \mathbf{J}_k \right].
+\end{align}
+Assuming the Jacobian $\mathbf{J}_k$ does not depend on the observation $Y$, we can move it outside the expectation by linearity:
+\begin{align}
+    \mathbf{I}(\boldsymbol{\nu}) &= \mathbf{J}_k^T \mathbb{E}_Y \left[ (\nabla_{\boldsymbol{\theta}_k} \log P) (\nabla_{\boldsymbol{\theta}_k} \log P)^T \right] \mathbf{J}_k.
+\end{align}
+The expectation term is precisely the Positional Fisher Information Matrix $\mathbf{I}_k(\mathbf{\Theta})$.
+\begin{equation}
+    \mathbf{I}(\boldsymbol{\nu}) = \mathbf{J}_k^T \mathbf{I}_k(\mathbf{\Theta}) \mathbf{J}_k.
+\end{equation}
+By the CRB (Theorem \ref{thm:crb}), $\text{Cov}(\hat{\boldsymbol{\nu}}) \succeq \mathbf{I}(\boldsymbol{\nu})^{-1}$, which completes the proof.
+\end{proof}
+
+\subsection{Interpretation of the Latent Embedding Function in NLP}
+The formulation in Theorem \ref{thm:latent_retrieval} relies on the existence of a differentiable mapping $\mathbf{f}(\boldsymbol{\nu})$. In NLP, inputs are typically discrete tokens.
+
+\begin{remark}[Scope of Analysis]
+The framework primarily analyzes the information geometry of the continuous input embedding space $\mathbf{\Theta}$, downstream of the tokenization and embedding lookup process.
+\end{remark}
+
+We examine practical interpretations of $\mathbf{f}(\boldsymbol{\nu})$ and $\mathbf{J}_k$:
+
+\subsubsection{Case 1: Linear Information Injection}
+Suppose $\nu \in \mathbb{R}$ is a scalar signal injected along a direction $\mathbf{v} \in \mathbb{R}^d$ onto a base embedding $\boldsymbol{\theta}_{base}$:
+\begin{equation}
+    \boldsymbol{\theta}_k = \mathbf{f}(\nu) = \boldsymbol{\theta}_{base} + \nu \cdot \mathbf{v}.
+\end{equation}
+The Jacobian is $\mathbf{J}_k = \mathbf{v}$. The Latent Retrieval Bound becomes:
+\begin{equation}
+    \text{Var}(\hat{\nu}) \succeq (\mathbf{v}^T \mathbf{I}_k(\mathbf{\Theta}) \mathbf{v})^{-1}.
+\end{equation}
+
+\subsubsection{Case 2: The Embedding Matrix as the Jacobian}
+Let $\boldsymbol{\nu} \in \{0,1\}^{|\mathcal{V}|}$ be the one-hot encoding of the token at position $k$, and $\mathbf{W}_E \in \mathbb{R}^{d \times |\mathcal{V}|}$ be the embedding matrix. Then $\boldsymbol{\theta}_k = \mathbf{W}_E \boldsymbol{\nu}$. The Jacobian $\mathbf{J}_k$ with respect to the (continuous relaxation of the) input vector $\boldsymbol{\nu}$ is the embedding matrix $\mathbf{W}_E$. Theorem \ref{thm:latent_retrieval} then bounds the estimation of the token probability vector:
+\begin{equation}
+    \text{Cov}(\hat{\boldsymbol{\nu}}) \succeq (\mathbf{W}_E^T \mathbf{I}_k(\mathbf{\Theta}) \mathbf{W}_E)^{-1}.
+\end{equation}
+
+\begin{corollary}
+\label{cor:information_bottleneck}
+If the Information Profile at position $k$, $\mathcal{P}_I(k; \mathbf{\Theta})$, is low, the theoretical limit for accurately retrieving the latent information $\boldsymbol{\nu}$ at position $k$ is poor, regardless of the specific encoding function $\mathbf{f}(\boldsymbol{\nu})$.
+\end{corollary}
+\begin{proof}
+The Information Profile is $\mathcal{P}_I(k; \mathbf{\Theta}) = \text{Tr}(\mathbf{I}_k(\mathbf{\Theta}))$. Since $\mathbf{I}_k(\mathbf{\Theta})$ is positive semi-definite, its trace is the sum of its eigenvalues. If the trace is small, all eigenvalues, including the maximum eigenvalue $\lambda_{max}(\mathbf{I}_k(\mathbf{\Theta}))$, must be small.
+
+The Fisher Information for the latent variable is $\mathbf{I}(\boldsymbol{\nu}) = \mathbf{J}_k^T \mathbf{I}_k(\mathbf{\Theta}) \mathbf{J}_k$. We can bound its maximum eigenvalue using the spectral norm (which equals the maximum eigenvalue for PSD matrices):
+\begin{align}
+    \lambda_{max}(\mathbf{I}(\boldsymbol{\nu})) &= \|\mathbf{J}_k^T \mathbf{I}_k(\mathbf{\Theta}) \mathbf{J}_k\|_2 \\
+    &\leq \|\mathbf{J}_k^T\|_2 \cdot \|\mathbf{I}_k(\mathbf{\Theta})\|_2 \cdot \|\mathbf{J}_k\|_2 \\
+    &= \lambda_{max}(\mathbf{I}_k(\mathbf{\Theta})) \cdot \sigma_{max}(\mathbf{J}_k)^2,
+\end{align}
+where $\sigma_{max}(\mathbf{J}_k)$ is the largest singular value of $\mathbf{J}_k$.
+
+If $\mathcal{P}_I(k; \mathbf{\Theta})$ is small, $\lambda_{max}(\mathbf{I}_k(\mathbf{\Theta}))$ is small. Assuming $\mathbf{J}_k$ is bounded, $\lambda_{max}(\mathbf{I}(\boldsymbol{\nu}))$ must also be small. The CRB is $\mathbf{I}(\boldsymbol{\nu})^{-1}$. Since the eigenvalues of the inverse are the reciprocals of the eigenvalues of the original matrix, the eigenvalues of $\mathbf{I}(\boldsymbol{\nu})^{-1}$ will be large, indicating a high lower bound on the estimation variance of $\boldsymbol{\nu}$.
+\end{proof}
+
+\subsection{Necessity of Fisher Information}
+
+\begin{theorem}[Necessity of Fisher Information for Retrieval]
+Successful information retrieval of a latent variable $\boldsymbol{\nu}$ from position $k$ requires a sufficiently large Input Fisher Information $\mathbf{I}_k(\mathbf{\Theta})$.
+\end{theorem}
+\begin{proof}
+We argue by contradiction. Assume successful retrieval is possible (low variance estimator $\hat{\boldsymbol{\nu}}(Y)$ exists), but $\mathbf{I}_k(\mathbf{\Theta})$ is negligible. By Corollary \ref{cor:information_bottleneck}, $\mathbf{I}(\boldsymbol{\nu})$ is also negligible. If $\mathbf{I}(\boldsymbol{\nu}) \approx \mathbf{0}$, the CRB for estimating $\boldsymbol{\nu}$ is exceedingly high. This implies the variance of any unbiased estimator $\hat{\boldsymbol{\nu}}(Y)$ must be large, contradicting the assumption of successful retrieval.
+\end{proof}
+
+\subsection{Information Geometry of Over-Squashing and Jacobian Norms}
+
+The analysis of information propagation in deep networks often involves studying the sensitivity of internal representations to the inputs, particularly in the context of over-squashing, rank collapse, or over-mixing \cite{barbero2024transformers, dong2021attention}. These phenomena describe scenarios where information fails to propagate effectively through the architecture. We now establish a rigorous connection between the Input Fisher Information Matrix and the Jacobians of the model's final representations, demonstrating that the Information Profile is a direct measure of the degree to which the architecture avoids over-squashing.
+
+Let $\mathbf{V}^{(L)}(\mathbf{\Theta}) \in \mathbb{R}^{K \times d}$ denote the matrix of embeddings at the final layer $L$. The model's output distribution $P_{\mathbf{W}}(Y|\mathbf{\Theta})$ is derived from these embeddings.
+
+\begin{definition}[Input-State Jacobian]
+The Input-State Jacobian at position $k$, denoted $\mathbf{J}_k^{(L)}(\mathbf{\Theta}) \in \mathbb{R}^{(Kd) \times d}$, measures the sensitivity of the entire final layer representation (vectorized) to the input embedding at position $k$:
+\begin{equation}
+    \mathbf{J}_k^{(L)}(\mathbf{\Theta}) = \frac{\partial \text{vec}(\mathbf{V}^{(L)}(\mathbf{\Theta}))}{\partial \boldsymbol{\theta}_k}.
+\end{equation}
+\end{definition}
+Over-squashing with respect to input $k$ occurs when the norm of this Jacobian, $\|\mathbf{J}_k^{(L)}\|$, is excessively small.
+
+\begin{theorem}[P-FIM and the Input-State Jacobian]
+\label{thm:pfim_jacobian}
+The Positional Fisher Information Matrix $\mathbf{I}_k(\mathbf{\Theta})$ is explicitly dependent on the Input-State Jacobian $\mathbf{J}_k^{(L)}$:
+\begin{equation}
+    \mathbf{I}_k(\mathbf{\Theta}) = (\mathbf{J}_k^{(L)})^T \mathbf{I}(\mathbf{V}^{(L)}) \mathbf{J}_k^{(L)},
+\end{equation}
+where $\mathbf{I}(\mathbf{V}^{(L)})$ is the Fisher Information Matrix of the output distribution with respect to the final layer embeddings $\mathbf{V}^{(L)}$.
+\end{theorem}
+\begin{proof}
+We apply the chain rule to the score function $\nabla_{\boldsymbol{\theta}_k} \log P(Y|\mathbf{\Theta})$. The input $\boldsymbol{\theta}_k$ influences the log-likelihood only through its effect on the final embeddings $\mathbf{V}^{(L)}$.
+\begin{equation}
+    \nabla_{\boldsymbol{\theta}_k} \log P = \left( \frac{\partial \text{vec}(\mathbf{V}^{(L)})}{\partial \boldsymbol{\theta}_k} \right)^T \nabla_{\text{vec}(\mathbf{V}^{(L)})} \log P = (\mathbf{J}_k^{(L)})^T \nabla_{\mathbf{V}^{(L)}} \log P.
+\end{equation}
+The P-FIM is the expectation of the outer product of this gradient. Assuming the Jacobian $\mathbf{J}_k^{(L)}$ does not depend on the specific output $Y$ (as it depends only on $\mathbf{\Theta}$ and $\mathbf{W}$), we can move it outside the expectation:
+\begin{align}
+    \mathbf{I}_k(\mathbf{\Theta}) &= \mathbb{E}_{Y|\mathbf{\Theta}} \left[ ((\mathbf{J}_k^{(L)})^T \nabla_{\mathbf{V}^{(L)}} \log P) ((\mathbf{J}_k^{(L)})^T \nabla_{\mathbf{V}^{(L)}} \log P)^T \right] \\
+    &= (\mathbf{J}_k^{(L)})^T \mathbb{E}_{Y|\mathbf{\Theta}} \left[ (\nabla_{\mathbf{V}^{(L)}} \log P) (\nabla_{\mathbf{V}^{(L)}} \log P)^T \right] \mathbf{J}_k^{(L)} \\
+    &= (\mathbf{J}_k^{(L)})^T \mathbf{I}(\mathbf{V}^{(L)}) \mathbf{J}_k^{(L)}.
+\end{align}
+\end{proof}
+
+\begin{corollary}[Over-Squashing Implies Information Loss]
+\label{cor:oversquashing_loss}
+The Information Profile at position $k$ is bounded by the squared maximum singular value of the Input-State Jacobian, $\sigma_{max}(\mathbf{J}_k^{(L)})^2$. If over-squashing occurs ($\|\mathbf{J}_k^{(L)}\| \to 0$), the Information Profile necessarily vanishes.
+\end{corollary}
+\begin{proof}
+We bound the trace using the spectral norm ($\|\cdot\|_2$). Since $\mathbf{I}_k(\mathbf{\Theta})$ is a $d \times d$ matrix, $\mathcal{P}_I(k; \mathbf{\Theta}) = \text{Tr}(\mathbf{I}_k(\mathbf{\Theta})) \leq d \cdot \|\mathbf{I}_k(\mathbf{\Theta})\|_2$.
+Using Theorem \ref{thm:pfim_jacobian} and the sub-multiplicativity of the spectral norm:
+\begin{align}
+    \|\mathbf{I}_k(\mathbf{\Theta})\|_2 &= \|(\mathbf{J}_k^{(L)})^T \mathbf{I}(\mathbf{V}^{(L)}) \mathbf{J}_k^{(L)}\|_2 \\
+    &\leq \|(\mathbf{J}_k^{(L)})^T\|_2 \cdot \|\mathbf{I}(\mathbf{V}^{(L)})\|_2 \cdot \|\mathbf{J}_k^{(L)}\|_2 \\
+    &= \|\mathbf{I}(\mathbf{V}^{(L)})\|_2 \cdot \sigma_{max}(\mathbf{J}_k^{(L)})^2.
+\end{align}
+Assuming $\|\mathbf{I}(\mathbf{V}^{(L)})\|_2$ is bounded, if the Jacobian norm vanishes due to over-squashing, $\mathcal{P}_I(k; \mathbf{\Theta})$ must also vanish. By Corollary \ref{cor:information_bottleneck}, this implies the information at position $k$ is irretrievable.
+\end{proof}
+
+
+
+
+\subsection{The Role of Attention Sinks in Preserving Information Geometry}
+
+Deep Transformer architectures are prone to rank collapse or over-mixing, where repeated application of attention layers causes the Input-State Jacobians to vanish or become rank-deficient \cite{dong2021attention}. As proven in the previous subsection, this leads to catastrophic information loss (vanishing FIM).
+
+Empirical studies observe the emergence of "attention sinks" (e.g., the first token) which attract significant attention mass \cite{xiao2024efficient}. It is hypothesized that this mechanism regulates information flow by reducing the mixing rate, thereby preventing collapse \cite{barbero2025sinks}. We analyze this hypothesis from two complementary information-geometric perspectives: the stabilization of the global information flow, and the role of the sink as an information anchor.
+
+\subsubsection{Stabilization of Information Flow}
+
+Attention sinks facilitate approximate "no-op" behavior in attention heads. By concentrating attention on a sink token $s$, often associated with a low-norm value vector, the output of the attention mechanism is minimized \cite{barbero2025sinks}.
+
+\begin{proposition}[Jacobian Stabilization via No-Ops]
+By approximating a no-op, an attention layer transformation $\mathbf{V}^{(\ell+1)} = \mathbf{V}^{(\ell)} + \mathcal{A}(\mathbf{V}^{(\ell)})$ approaches the identity mapping. This stabilizes the information geometry by preventing the rapid decay of the global Jacobian norms.
+\end{proposition}
+\begin{proof}
+If the attention block output $\mathcal{A}(\mathbf{V}^{(\ell)}) \approx \mathbf{0}$, the layer-wise Jacobian $\mathbf{J}^{(\ell)} = \frac{\partial \mathbf{V}^{(\ell+1)}}{\partial \mathbf{V}^{(\ell)}}$ approaches the identity matrix $\mathbf{I}$.
+
+The global Input-State Jacobian $\mathbf{J}_k^{(L)}$ is composed of products of these layer-wise Jacobians. If the architecture engages in strong mixing at every layer, the spectral properties of the transformations often cause the norm of the product to vanish exponentially with depth $L$ (over-squashing) \cite{dong2021attention}.
+
+However, if a subset of layers utilize attention sinks such that $\mathbf{J}^{(\ell)} \approx \mathbf{I}$, these layers do not contribute to the attenuation of the overall Jacobian norm, effectively reducing the mixing depth. This prevents the vanishing of $\|\mathbf{J}_k^{(L)}\|$. By Corollary \ref{cor:oversquashing_loss}, this mechanism preserves the Information Profile $\mathcal{P}_I(k; \mathbf{\Theta})$.
+\end{proof}
+
+\subsubsection{The Sink as an Information Anchor}
+
+If the attention sink mechanism is functionally necessary to prevent collapse, this necessity must also be reflected in the Fisher Information of the sink token itself.
+
+\begin{theorem}[High Fisher Information of the Sink Token]
+If an LLM relies on the attention sink mechanism at position $k_{sink}$ (e.g., $k=1$) to regulate information flow and prevent representational collapse, the Positional Fisher Information at that position, $\mathbf{I}_{k_{sink}}(\mathbf{\Theta})$, must be large.
+\end{theorem}
+\begin{proof}
+We consider the functional role of the sink. The mechanism relies on the presence and specific embedding of the token at $k_{sink}$ to modulate attention patterns and prevent the collapse of $\mathbf{V}^{(L)}$.
+
+Consider a perturbation of the sink token embedding, $\boldsymbol{\theta}_{k_{sink}} \to \boldsymbol{\theta}_{k_{sink}} + \delta\boldsymbol{\theta}$. If the model critically relies on the specific value of $\boldsymbol{\theta}_{k_{sink}}$ (e.g., to activate the no-op behavior), this perturbation disrupts the mechanism.
+
+The disruption of the sink mechanism leads to a significant change in the information propagation dynamics, specifically causing an increase in over-mixing and subsequent representational collapse (as demonstrated empirically when removing the sink \cite{barbero2025sinks}).
+
+This collapse of the internal representations $\mathbf{V}^{(L)}$ fundamentally alters the model's output distribution $P_{\mathbf{W}}(Y|\mathbf{\Theta})$. Therefore, the KL divergence between the original distribution and the distribution perturbed at the sink token is large.
+
+By Lemma \ref{lemma:kl_approx}, a large KL divergence resulting from a small perturbation $\delta\boldsymbol{\theta}$ implies a large Fisher Information Matrix:
+\begin{equation}
+    D_{KL} \approx \frac{1}{2} \delta\boldsymbol{\theta}^T \mathbf{I}_{k_{sink}}(\mathbf{\Theta}) \delta\boldsymbol{\theta}.
+\end{equation}
+Since the disruption causes a significant change in the distribution, $\mathbf{I}_{k_{sink}}(\mathbf{\Theta})$ must be large. The sink acts as an anchor for the information geometry of the entire context window.
+\end{proof}
+
+\section{Computational Methodology and Estimation}
+\label{sec:computation}
+The theoretical framework relies on the calculation of the P-FIM and the Information Profile. We now address the practical challenges associated with these computations in LLMs.
+
+\subsection{Monte Carlo Estimation of the Information Profile}
+The expectation over the output distribution $P_{\mathbf{W}}(Y|\mathbf{\Theta})$ is intractable due to the combinatorial space of outputs $Y$. We utilize Monte Carlo methods, leveraging the formulation derived in Proposition \ref{prop:profile_norm}:
+\begin{equation}
+    \mathcal{P}_I(k; \mathbf{\Theta}) = \mathbb{E}_{Y|\mathbf{\Theta}}[\|\nabla_{\boldsymbol{\theta}_k} \log P_{\mathbf{W}}(Y|\mathbf{\Theta})\|_2^2].
+\end{equation}
+
+\begin{definition}[Monte Carlo Information Profile Estimator]
+Let $\{Y^{(i)}\}_{i=1}^N$ be a set of $N$ independent samples drawn from $P_{\mathbf{W}}(Y|\mathbf{\Theta})$. The Monte Carlo estimator is:
+\begin{equation}
+    \hat{\mathcal{P}}_I^{MC}(k) = \frac{1}{N} \sum_{i=1}^N \|\nabla_{\boldsymbol{\theta}_k} \log P_{\mathbf{W}}(Y^{(i)}|\mathbf{\Theta})\|_2^2.
+\end{equation}
+\end{definition}
+
+\subsubsection{Properties of the Estimator}
+
+\begin{proposition}[Unbiasedness and Consistency]
+The Monte Carlo estimator $\hat{\mathcal{P}}_I^{MC}(k)$ is an unbiased and consistent estimator of the true Information Profile $\mathcal{P}_I(k; \mathbf{\Theta})$.
+\end{proposition}
+\begin{proof}
+Unbiasedness follows from the linearity of expectation:
+\begin{align}
+    \mathbb{E}[\hat{\mathcal{P}}_I^{MC}(k)] &= \frac{1}{N} \sum_{i=1}^N \mathbb{E}_{Y^{(i)}|\mathbf{\Theta}}[\|\nabla_{\boldsymbol{\theta}_k} \log P_{\mathbf{W}}(Y^{(i)}|\mathbf{\Theta})\|_2^2] = \frac{1}{N} \sum_{i=1}^N \mathcal{P}_I(k; \mathbf{\Theta}) = \mathcal{P}_I(k; \mathbf{\Theta}).
+\end{align}
+Consistency (convergence in probability to the true value as $N \to \infty$) follows from the Law of Large Numbers, assuming the variance of the squared gradient norms is finite.
+\end{proof}
+
+\begin{proposition}[Variance of the MC Estimator]
+\label{prop:mc_variance}
+The variance of the Monte Carlo estimator $\hat{\mathcal{P}}_I^{MC}(k)$ is given by:
+\begin{equation}
+    \text{Var}(\hat{\mathcal{P}}_I^{MC}(k)) = \frac{1}{N} \text{Var}_{Y|\mathbf{\Theta}}\left(\|\nabla_{\boldsymbol{\theta}_k} \log P_{\mathbf{W}}(Y|\mathbf{\Theta})\|_2^2\right).
+\end{equation}
+\end{proposition}
+\begin{proof}
+Let $Z_k(Y) = \|\nabla_{\boldsymbol{\theta}_k} \log P_{\mathbf{W}}(Y|\mathbf{\Theta})\|_2^2$. Since the samples $Y^{(i)}$ are independent and identically distributed (i.i.d.):
+\begin{align}
+    \text{Var}(\hat{\mathcal{P}}_I^{MC}(k)) &= \text{Var}\left(\frac{1}{N} \sum_{i=1}^N Z_k(Y^{(i)})\right) \\
+    &= \frac{1}{N^2} \sum_{i=1}^N \text{Var}(Z_k(Y^{(i)})) \quad (\text{Independence of samples}) \\
+    &= \frac{1}{N^2} \cdot N \cdot \text{Var}(Z_k(Y)) = \frac{1}{N} \text{Var}_{Y|\mathbf{\Theta}}(Z_k(Y)).
+\end{align}
+\end{proof}
+The required number of samples $N$ depends on the inherent variance of the squared gradient norms. In practice, this variance should be estimated empirically to determine the reliability of the estimate and adjust $N$ accordingly.
+
+\subsubsection{Implementation Details: Gradient Computation and Sampling}
+For an autoregressive LLM, the log-likelihood of a sequence $Y=(y_1, \dots, y_L)$ is:
+\begin{equation}
+    \log P_{\mathbf{W}}(Y|\mathbf{\Theta}) = \sum_{l=1}^L \log P_{\mathbf{W}}(y_l | y_{<l}, \mathbf{\Theta}).
+\end{equation}
+The gradient $\nabla_{\boldsymbol{\theta}_k} \log P_{\mathbf{W}}(Y|\mathbf{\Theta})$ can be efficiently computed using automatic differentiation by backpropagating from this log-likelihood down to the input embedding layer.
+
+\begin{remark}[Requirement for Unbiased Sampling]
+To ensure that the expectation is correctly approximated according to the definition of the true FIM, the samples $Y^{(i)}$ must be drawn from the actual model distribution $P_{\mathbf{W}}(Y|\mathbf{\Theta})$. This necessitates the use of unbiased sampling methods, such as ancestral sampling. Using biased decoding strategies (e.g., greedy search or beam search) would lead to a biased estimator of the Information Profile.
+\end{remark}
+
+\subsubsection{Practical Algorithm}
+Algorithm \ref{alg:compute_info_profile} outlines the procedure for computing the Information Profile.
+
+\begin{algorithm}
+\caption{Computation of the Information Profile via Monte Carlo Estimation}\label{alg:compute_info_profile}
+\begin{algorithmic}[1]
+\Require Trained LLM $P_{\mathbf{W}}$, Input embeddings $\mathbf{\Theta} = (\boldsymbol{\theta}_1, \dots, \boldsymbol{\theta}_K)$, Number of MC samples $N$.
+\State Initialize Profile $\hat{\mathcal{P}}_I \leftarrow \mathbf{0} \in \mathbb{R}^K$.
+\For{$i = 1$ to $N$}
+    \State \# Step 1: Sample Output (Forward Pass)
+    \State Sample output sequence $Y^{(i)} \sim P_{\mathbf{W}}(Y|\mathbf{\Theta})$ using \textbf{ancestral sampling}.
+    \State
+    \State \# Step 2: Calculate Log-Likelihood
+    \State Compute the log-likelihood $L^{(i)} = \log P_{\mathbf{W}}(Y^{(i)}|\mathbf{\Theta})$.
+    \State
+    \State \# Step 3: Backpropagation to Input Embeddings
+    \State Compute gradients w.r.t. inputs: $\mathbf{G}^{(i)} = \nabla_{\mathbf{\Theta}} L^{(i)}$.
+    \State $\mathbf{G}^{(i)}$ is structured as $(\mathbf{g}_1^{(i)}, \dots, \mathbf{g}_K^{(i)})$, where $\mathbf{g}_k^{(i)} = \nabla_{\boldsymbol{\theta}_k} L^{(i)}$.
+    \State
+    \State \# Step 4: Accumulate Squared Norms
+    \For{$k = 1$ to $K$}
+        \State $\hat{\mathcal{P}}_I(k) \leftarrow \hat{\mathcal{P}}_I(k) + \|\mathbf{g}_k^{(i)}\|_2^2$.
+    \EndFor
+\EndFor
+\State \# Step 5: Normalize
+\State $\hat{\mathcal{P}}_I \leftarrow \hat{\mathcal{P}}_I / N$.
+\Ensure Estimated Information Profile $\hat{\mathcal{P}}_I$.
+\end{algorithmic}
+\end{algorithm}
+
+\section{Proposed Experimental Framework}
+To validate the theoretical framework, we outline a proposed experimental methodology. The objective is to empirically verify that the Information Profile accurately predicts the information retrieval capabilities of LLMs as measured by the NIAH benchmark.
+
+\subsection{Objective: Correlating Information Profile with NIAH}
+We hypothesize that phenomena such as "lost in the middle" will manifest analytically as a characteristic dip in $\mathcal{P}_I(k; \mathbf{\Theta})$ corresponding to the observed drop in empirical performance.
+
+\subsection{Experimental Setup}
+
+\subsubsection{Model Selection and Input Construction}
+The analysis should be conducted on diverse architectures (e.g., RoPE, ALiBi). Inputs utilize the standard NIAH methodology: a long context ("haystack") $\mathbf{\Theta}$ with a "needle" inserted at position $k$.
+
+\subsubsection{Calculation of the Information Profile}
+For a given input $\mathbf{\Theta}$, the Information Profile is estimated using Algorithm \ref{alg:compute_info_profile}. The number of samples $N$ should be determined based on the estimated variance (Proposition \ref{prop:mc_variance}) to ensure stability (e.g., $N=100-500$).
+
+\subsubsection{Empirical NIAH Evaluation}
+Concurrently, the standard empirical NIAH evaluation is performed, measuring recall accuracy using the model's standard decoding strategy (e.g., greedy search).
+
+\subsubsection{EIP Evaluation}
+To validate the EIP $\bar{\mathcal{P}}_I(k)$, the estimation procedure should be repeated over a diverse dataset of inputs $\mathbf{\Theta}$ sampled from $\mathbb{P}(\mathbf{\Theta})$, and the results averaged.
+
+\subsection{Hypothesized Results and Analysis}
+We compare the plot of $\hat{\mathcal{P}}_I^{MC}(k)$ (or $\bar{\mathcal{P}}_I(k)$) with the plot of Recall Accuracy versus $k$.
+
+\begin{enumerate}
+    \item \textbf{Correlation:} We expect a strong positive correlation between the Information Profile and the recall accuracy.
+    \item \textbf{Analytical "Lost in the Middle":} For models exhibiting a U-shaped recall curve, we hypothesize that the Information Profile will exhibit a corresponding U-shape.
+    \item \textbf{Analyzing the Efficiency Gap:} Discrepancies where the Information Profile is high but the empirical recall is low indicate an "Efficiency Gap" (see Section \ref{sec:efficiency_gap}).
+\end{enumerate}
+
+\section{Discussion and Limitations}
+
+\subsection{The Information Profile as an Analytical Benchmark}
+
+The Information Profile $\mathcal{P}_I(k; \mathbf{\Theta})$ provides a direct, analytical counterpart to the empirical plots generated by NIAH analysis. As shown in Proposition \ref{prop:profile_norm}, the Information Profile is the expected squared norm of input gradients. If the architecture causes gradients with respect to $\boldsymbol{\theta}_k$ to vanish during backpropagation to the input, $\mathcal{P}_I(k; \mathbf{\Theta})$ will be small. This demonstrates that the Information Profile is a direct measure of how effectively the architecture propagates signals from the input to the output likelihood.
+
+\subsection{Advantages over Empirical Benchmarks}
+The Fisher Information framework offers significant advantages:
+
+\begin{enumerate}
+    \item \textbf{Rigor:} The CRB provides a theoretical lower bound based on fundamental information content, independent of prompt engineering.
+    \item \textbf{Task Agnosticism:} It measures the sensitivity of the model's representation to the input, independent of specific downstream tasks.
+    \item \textbf{Generalization:} The Expected Information Profile (EIP) allows for the analysis of average information retention capacity, moving beyond specific input sequences.
+\end{enumerate}
+
+\subsection{The Efficiency Gap: Availability vs. Utilization}
+\label{sec:efficiency_gap}
+A crucial distinction must be made between the theoretical bounds provided by the CRB and the practical performance achieved by the LLM.
+
+\begin{remark}[The Efficiency Gap]
+The CRB is a lower bound achieved only by an optimal, unbiased estimator. LLMs utilize complex decoding strategies (e.g., greedy search) that are generally biased and not statistically efficient.
+\end{remark}
+
+It is possible for the Fisher Information to be high (low CRB), indicating the information is \emph{available} in the output distribution $\mathbb{P}(Y|\mathbf{\Theta})$, yet the model may fail the NIAH task if the decoding strategy fails to \emph{utilize} that information effectively. The Information Profile measures capacity, while NIAH measures realized performance.
+
+\subsection{Computational Considerations and Access}
+Calculating the Information Profile requires white-box access to the model weights for backpropagation to the input embeddings. While the Monte Carlo estimation is tractable, it requires multiple forward and backward passes ($N$ samples), which can be computationally intensive for very large models.
+
+\section{Conclusion}
+We have presented a rigorous mathematical framework for analyzing information propagation in Large Language Models using the Fisher Information Matrix and the Cramér-Rao Bound. By introducing the Information Profile and the Expected Information Profile, we provide analytical tools to quantify how effectively information is retained across the context window, demonstrating that it corresponds to the expected squared norm of input gradients. We have rigorously formalized the "Needle in a Haystack" task as a latent variable estimation problem (Theorem \ref{thm:latent_retrieval}) and derived the theoretical limits on retrieval accuracy. Furthermore, we detailed a practical computational methodology based on Monte Carlo estimation, analyzing the estimator's properties and emphasizing the requirement for unbiased sampling. This information-geometric approach offers a powerful lens for understanding the fundamental limits of long-context modeling and provides a principled, analytical alternative to empirical benchmarks.
+
+\bibliographystyle{plain}
+\begin{thebibliography}{1}
+
+\bibitem{amari2016information}
+Shun-ichi Amari.
+\newblock {\em Information geometry and its applications}.
+\newblock Springer, 2016.
+
+\bibitem{cover2006elements}
+Thomas M. Cover and Joy A. Thomas.
+\newblock {\em Elements of information theory}.
+\newblock John Wiley \& Sons, 2006.
+
+\bibitem{du2024context}
+Kevin Du, et al.
+\newblock Context versus Prior Knowledge in Language Models.
+\newblock In {\em Proceedings of the Annual Meeting of the Association for Computational Linguistics (ACL)}, 2024.
+
+\bibitem{lehmann1998theory}
+Erich L. Lehmann and George Casella.
+\newblock {\em Theory of point estimation}.
+\newblock Springer Science \& Business Media, 1998.
+
+\bibitem{liu2023lost}
+Nelson F. Liu, et al.
+\newblock Lost in the middle: How language models use long contexts.
+\newblock {\em arXiv preprint arXiv:2307.03172}, 2023.
+
+\bibitem{liu2024efficiently}
+Tianyu Liu, Kevin Du, et al.
+\newblock Efficiently Computing Susceptibility to Context in Language Models.
+\newblock In {\em Findings of the Conference on Empirical Methods in Natural Language Processing (EMNLP)}, 2024.
+
+\bibitem{vaswani2017attention}
+Ashish Vaswani, et al.
+\newblock Attention is all you need.
+\newblock In {\em Advances in Neural Information Processing Systems}, 2017.
+
+\bibitem{wu2025theoryofmind}
+Yuheng Wu, et al.
+\newblock How Large Language Models Encode Theory-of-Mind: A Study on Sparse Parameter Patterns.
+\newblock {\em npj Artificial Intelligence}, 2025.
+
+\end{thebibliography}
+
+\end{document}
