@@ -55,6 +55,44 @@ After that, expand into sensitivity work:
 - prompt / template sensitivity
 - model family and model size sensitivity
 
+## Current autonomous priority
+
+The next autonomous workstream should be a multi-model long-context matrix sweep.
+
+Full long-context sweep roster (primary evidence set):
+
+1. `ibm-granite/granite-3.3-2b-instruct` (128K target)
+2. `microsoft/Phi-4-mini-instruct` (128K target, run with `--trust-remote-code`)
+3. `meta-llama/Llama-3.2-3B-Instruct` (128K target)
+4. `meta-llama/Llama-3.2-1B-Instruct` (128K target)
+5. `google/gemma-3-4b-it` (128K target, gated)
+6. `HuggingFaceTB/SmolLM3-3B` (65536 by default; only push to 128K when YaRN/rope config is confirmed)
+
+Cheaper pilot/debug roster (pipeline checks and short-context ablations):
+
+1. `google/gemma-3-1b-it` (32K target, gated)
+2. `HuggingFaceTB/SmolLM2-1.7B-Instruct-16k` (16K target)
+3. `allenai/OLMo-2-0425-1B-Instruct` (4K target)
+4. `HuggingFaceTB/SmolLM2-360M-Instruct` (debug-cost target)
+
+Execution constraints:
+
+- sweep context size and MC sample count jointly, not only one axis at a time,
+- run a full NIAH position scan with at least 11 needle positions at `0.0, 0.1, ..., 1.0`,
+- for every model, record requested context, effective context, and any model-limit clamp/OOM explicitly in `matrix_summary.json`,
+- for Gemma models, require authenticated HF access and record gating failures as first-class run outcomes,
+- if Gemma loading fails under generic `AutoModelForCausalLM`, patch the loader and rerun rather than silently dropping the model,
+- write matrix-style plots for each metric,
+- add log-scale matrix plots whenever metric magnitudes differ by large factors,
+- include an MC convergence analysis that compares each sample count against the largest successful sample count at the same context.
+
+Cross-run summary figure requirements:
+
+- generate `needle_sensitivity_position_matrices.png` for all models in the roster,
+- generate `niah_accuracy_position_matrices.png` for all models in the roster,
+- generate `long_context_limit_summary.png` for all models in the roster,
+- add `context_vs_mean_needle_info.png` with x-axis = context size and y-axis = mean needle information, using one series per model.
+
 ## What counts as progress
 
 A change is a **keep** if it does one or more of the following:
@@ -114,6 +152,7 @@ When reviewing a run, inspect at minimum:
 - `eip.json`
 - `summary.json`
 - any saved plots
+- any matrix summary files when running grid sweeps
 
 ## Paper-writing requirements
 
@@ -162,6 +201,50 @@ If a run crashes:
 
 Do not silently hide crashes from `results.tsv`.
 
+## Resume On Larger VRAM
+
+When resuming on a machine with more VRAM, continue from each model's current successful / failing frontier instead of repeating small-context work.
+
+Use these model lists:
+
+```bash
+LONG_CONTEXT_MODEL_IDS="ibm-granite/granite-3.3-2b-instruct,microsoft/Phi-4-mini-instruct,meta-llama/Llama-3.2-3B-Instruct,meta-llama/Llama-3.2-1B-Instruct,google/gemma-3-4b-it,HuggingFaceTB/SmolLM3-3B"
+PILOT_MODEL_IDS="google/gemma-3-1b-it,HuggingFaceTB/SmolLM2-1.7B-Instruct-16k,allenai/OLMo-2-0425-1B-Instruct,HuggingFaceTB/SmolLM2-360M-Instruct"
+```
+
+First commands to run on the higher-VRAM box:
+
+```bash
+uv run train.py \
+  --experiment-group matrix \
+  --model-ids "${LONG_CONTEXT_MODEL_IDS}" \
+  --matrix-contexts 2048,8192,16384,32768,65536,98304,128000 \
+  --matrix-mc-samples 4,8,16 \
+  --needle-positions 0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0 \
+  --eip-inputs 0 \
+  --max-new-tokens 12 \
+  --trust-remote-code \
+  --description "multi-model long-context matrix sweep"
+```
+
+```bash
+uv run train.py \
+  --experiment-group matrix \
+  --model-ids "${PILOT_MODEL_IDS}" \
+  --matrix-contexts 1024,2048,4096,8192,16384,32768 \
+  --matrix-mc-samples 4,8,16 \
+  --needle-positions 0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0 \
+  --eip-inputs 0 \
+  --max-new-tokens 12 \
+  --description "multi-model pilot matrix sweep"
+```
+
+After those runs finish:
+
+- regenerate the cross-run summary figures with `uv run python make_summary_figures.py`,
+- ensure the output includes all-model versions of the three main plots plus `context_vs_mean_needle_info.png`,
+- update `paper.md` with the new largest successful contexts and any remaining OOM boundaries.
+
 ## Closing discipline
 
 The point of this repo is not only to run experiments. The point is to leave behind a usable research trail:
@@ -170,4 +253,3 @@ The point of this repo is not only to run experiments. The point is to leave beh
 - logs,
 - artifacts,
 - and a paper draft that a human can audit.
-

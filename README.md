@@ -60,11 +60,39 @@ uv run train.py --model-id Qwen/Qwen2.5-0.5B-Instruct --experiment-group baselin
 uv run train.py --model-id Qwen/Qwen2.5-0.5B-Instruct --experiment-group sensitivity
 ```
 
-5. Compare several open-source models:
+5. Define the current multi-model sweep rosters:
 
 ```bash
-uv run train.py   --experiment-group compare   --model-ids Qwen/Qwen2.5-0.5B-Instruct,Qwen/Qwen2.5-1.5B-Instruct,mistralai/Mistral-7B-Instruct-v0.3
+LONG_CONTEXT_MODEL_IDS="ibm-granite/granite-3.3-2b-instruct,microsoft/Phi-4-mini-instruct,meta-llama/Llama-3.2-3B-Instruct,meta-llama/Llama-3.2-1B-Instruct,google/gemma-3-4b-it,HuggingFaceTB/SmolLM3-3B"
+PILOT_MODEL_IDS="google/gemma-3-1b-it,HuggingFaceTB/SmolLM2-1.7B-Instruct-16k,allenai/OLMo-2-0425-1B-Instruct,HuggingFaceTB/SmolLM2-360M-Instruct"
 ```
+
+6. Run a long-context matrix sweep across context size and MC sample count for the primary roster:
+
+```bash
+uv run train.py \
+  --experiment-group matrix \
+  --model-ids "${LONG_CONTEXT_MODEL_IDS}" \
+  --matrix-contexts 2048,8192,16384,32768,65536,98304,128000 \
+  --matrix-mc-samples 4,8,16 \
+  --needle-positions 0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0 \
+  --eip-inputs 0 \
+  --trust-remote-code
+```
+
+7. Run the cheaper pilot/debug matrix:
+
+```bash
+uv run train.py \
+  --experiment-group matrix \
+  --model-ids "${PILOT_MODEL_IDS}" \
+  --matrix-contexts 1024,2048,4096,8192,16384,32768 \
+  --matrix-mc-samples 4,8,16 \
+  --needle-positions 0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0 \
+  --eip-inputs 0
+```
+
+Gemma models are gated on Hugging Face and require authenticated access. `microsoft/Phi-4-mini-instruct` should be run with `--trust-remote-code`. `HuggingFaceTB/SmolLM3-3B` is 65,536 tokens by default and should only be pushed to 128K when YaRN/rope settings are explicitly confirmed.
 
 ## Default behavior
 
@@ -89,6 +117,20 @@ Each run creates an artifact directory under `artifacts/<run_id>/` with:
 - `eip.json` — averaged EIP curve and derived metrics,
 - optional PNG plots if matplotlib is available.
 
+Matrix sweeps also create a sweep-level artifact directory with:
+
+- `matrix_config.json` — requested grid and resolved model-limit clamp,
+- `matrix_summary.json` — aggregated cell metrics and convergence report,
+- `matrix_summary.md` — human-readable matrix tables,
+- heatmap PNGs for raw metrics and, when useful, log-scale heatmaps.
+
+Cross-run summary generation (`uv run python make_summary_figures.py`) is expected to produce:
+
+- `needle_sensitivity_position_matrices.png` for all models,
+- `niah_accuracy_position_matrices.png` for all models,
+- `long_context_limit_summary.png` for all models,
+- `context_vs_mean_needle_info.png` with x-axis `context_tokens` and y-axis `mean_needle_info`.
+
 The repo root also keeps:
 
 - `results.tsv` — one row per run,
@@ -111,6 +153,7 @@ This keeps the loop grep-friendly and simple for autonomous agents.
 - **Downloadable or fallback haystacks.** If you download the climbmix shards, the repo samples real long-form haystacks. If not, it falls back to built-in text snippets so the pipeline still boots.
 - **Operational, not maximal.** The code aims to be a working research harness, not the most optimized profiler for every model family.
 - **Evidence first.** The agent is expected to update `paper.md` only when a claim is backed by artifacts already present in `artifacts/`.
+- **Matrix-first long-context sweeps.** Large-context work should vary context length and MC samples together, then inspect convergence against the largest successful MC count for each context.
 
 ## Project structure
 
@@ -134,4 +177,3 @@ The intended autonomous loop is:
 4. run sensitivity sweeps,
 5. update `paper.md`,
 6. iterate until the paper draft is evidence-backed.
-
